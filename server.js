@@ -8,36 +8,59 @@ import path from "path";
 import { fileURLToPath } from "url";
 import cors from "cors";
 import wisp from "wisp-server-node";
+import { request as httpsRequest } from "https";
+import { request as httpRequest } from "http";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
 const app = express();
 const bareServer = createBareServer("/bare/");
 const PORT = process.env.PORT || 3000;
 
-// Allow all CORS
 app.use(cors({ origin: "*" }));
 
-// Static UV assets need Cross-Origin-Resource-Policy: cross-origin
-// so ANY page (on a different origin) can load these scripts.
-// Do NOT apply COEP globally - it breaks cross-origin script loading.
-const crossOriginStatic = (root) =>
-  express.static(root, {
-    setHeaders: (res) => {
-      res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
-      res.setHeader("Access-Control-Allow-Origin", "*");
+// UV static assets
+app.use("/uv/", express.static(uvPath));
+app.use("/epoxy/", express.static(epoxyPath));
+app.use("/baremux/", express.static(baremuxPath));
+
+app.get("/health", (req, res) => res.json({ status: "ok" }));
+app.get("/", (req, res) => res.send("UV Backend is live."));
+
+// ── ASSET PROXY ──────────────────────────────────────────────────
+// GET /asset?url=https://example.com/style.css
+// Fetches the asset and streams it back with correct content-type.
+// Lets the srcdoc iframe load CSS/JS/images from external origins.
+app.get("/asset", async (req, res) => {
+  const target = req.query.url;
+  if (!target) return res.status(400).send("Missing url param");
+
+  let parsed;
+  try { parsed = new URL(target); } catch { return res.status(400).send("Bad URL"); }
+
+  const lib = parsed.protocol === "https:" ? httpsRequest : httpRequest;
+
+  const proxyReq = lib({
+    hostname: parsed.hostname,
+    port: parsed.port || (parsed.protocol === "https:" ? 443 : 80),
+    path: parsed.pathname + parsed.search,
+    method: "GET",
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+      "Accept": "*/*",
+      "Referer": parsed.origin + "/",
     },
+  }, (proxyRes) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Content-Type", proxyRes.headers["content-type"] || "application/octet-stream");
+    res.writeHead(proxyRes.statusCode);
+    proxyRes.pipe(res);
   });
 
-app.use("/uv/", crossOriginStatic(uvPath));
-app.use("/epoxy/", crossOriginStatic(epoxyPath));
-app.use("/baremux/", crossOriginStatic(baremuxPath));
-
-// Health check
-app.get("/health", (req, res) => res.json({ status: "ok" }));
-
-// Root
-app.get("/", (req, res) => res.send("UV Backend is live."));
+  proxyReq.on("error", (e) => {
+    if (!res.headersSent) res.status(502).send("Upstream error: " + e.message);
+  });
+  proxyReq.end();
+});
 
 const server = createServer();
 
