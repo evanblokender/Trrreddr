@@ -15,24 +15,23 @@ const app = express();
 const bareServer = createBareServer("/bare/");
 const PORT = process.env.PORT || 3000;
 
-// CORS
-app.use(cors({
-  origin: "*",
-  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Bare-Host", "X-Bare-Port", "X-Bare-Protocol", "X-Bare-Path", "X-Bare-Headers", "X-Bare-Forward-Headers"],
-}));
+// Allow all CORS
+app.use(cors({ origin: "*" }));
 
-// Required headers for SharedArrayBuffer / UV service worker
-app.use((req, res, next) => {
-  res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
-  res.setHeader("Cross-Origin-Embedder-Policy", "require-corp");
-  next();
-});
+// Static UV assets need Cross-Origin-Resource-Policy: cross-origin
+// so ANY page (on a different origin) can load these scripts.
+// Do NOT apply COEP globally - it breaks cross-origin script loading.
+const crossOriginStatic = (root) =>
+  express.static(root, {
+    setHeaders: (res) => {
+      res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+      res.setHeader("Access-Control-Allow-Origin", "*");
+    },
+  });
 
-// Serve UV, epoxy, baremux static files
-app.use("/uv/", express.static(uvPath));
-app.use("/epoxy/", express.static(epoxyPath));
-app.use("/baremux/", express.static(baremuxPath));
+app.use("/uv/", crossOriginStatic(uvPath));
+app.use("/epoxy/", crossOriginStatic(epoxyPath));
+app.use("/baremux/", crossOriginStatic(baremuxPath));
 
 // Health check
 app.get("/health", (req, res) => res.json({ status: "ok" }));
@@ -40,7 +39,6 @@ app.get("/health", (req, res) => res.json({ status: "ok" }));
 // Root
 app.get("/", (req, res) => res.send("UV Backend is live."));
 
-// HTTP server
 const server = createServer();
 
 server.on("request", (req, res) => {
@@ -62,5 +60,5 @@ server.on("upgrade", (req, socket, head) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`✅ UV Backend running on port ${PORT}`);
+  console.log(`UV Backend running on port ${PORT}`);
 });
